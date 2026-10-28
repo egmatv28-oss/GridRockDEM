@@ -2,7 +2,7 @@
 
 
 # GridRockDEM
-Grid (Blocks) DEM Runtime solver for rock mechanics powered by Taichi with comfortable gui. Use Druger-Prager rock model. Created with this agents (Deepseek v4.1 flash and Mimo-v2.6-pro) in Opencode.
+Prototype Grid (Blocks) DEM Runtime solver for rock mechanics powered by Taichi with comfortable gui. Use Druger-Prager rock model. Created with this agents (Deepseek v4.1 flash and Mimo-v2.6-pro) in Opencode.
 
 https://github.com/user-attachments/assets/33644191-1683-4f5e-88a3-ca6d6247002a
 
