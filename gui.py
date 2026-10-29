@@ -201,6 +201,9 @@ def clear_scene():
             if i != n:
                 copy_block_state(i, n)
                 reset_block_runtime(n)
+            efx[n] = 0.0
+            efy[n] = 0.0
+            ovfX[n] = 0.0
             n += 1
         i += 1
     bcount[None] = n
@@ -234,6 +237,10 @@ def clear_scene():
 
 
 def do_stroke(mx, my, last_mx, last_my, tool, brush):
+    # Ручное редактирование несовместимо с активной внешней нагрузкой
+    # (UCS/Brazil/beam): иначе старые блоки остаются с efx/efy и «висят».
+    if tool in (0, 3, 4):
+        clear_ext_forces()
     dx = mx - last_mx
     dy = my - last_my
     dist = math.hypot(dx, dy)

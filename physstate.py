@@ -838,7 +838,25 @@ def init_block(i: ti.i32, x: ti.f32, y: ti.f32, size: ti.f32, fixed: ti.i32):
     wfx[i] = 0.0
     wfy[i] = 0.0
     ovf[i] = 0.0
+    ovfX[i] = 0.0
     sideF[i] = 0.0
+    # Внешние силы (UCS/Brazil/beam) НЕ должны наследоваться новым блоком:
+    # слот мог остаться от удалённого/перемещённого блока.
+    efx[i] = 0.0
+    efy[i] = 0.0
+    faceL[i] = 0
+    faceR[i] = 0
+    crackL[i] = 0
+    crackR[i] = 0
+    supp[i] = 0
+    comIn[i] = 0
+    inContact[i] = 0
+    cnck[i] = 0.0
+    supLo[i] = 1e9
+    supHi[i] = -1e9
+    hasL[i] = 0
+    hasR[i] = 0
+    brkShell[i] = 0
     bfixed[i] = fixed
     bbedrock[i] = 0
     bshade[i] = ti.random()
@@ -1194,7 +1212,10 @@ def fracture_bond(bd: ti.i32, a: ti.i32, b: ti.i32, crush: ti.i32,
         dv_n = dv * sp
         dv_s = dv * (1.0 - sp)
 
-        sgn_n = 1.0 if strain > 0.0 else -1.0
+        # Разрыв ВСЕГДА раскрывает трещину: при strain<0 (сдвиг/изгиб в
+        # сжатой зоне) старый знак давал ЗАКРЫВАЮЩИЙ пинок — обломок
+        # вбивался обратно в массив и «зависал»/крутился на шве.
+        sgn_n = 1.0
         # Сохранение импульса: относительная скорость расхождения dv задаётся
         # приведённой массой (E_kin = ½·mred·dv²), но распределяется по блокам
         # обратно пропорционально массам (Δv_a = −mb/(ma+mb)·dv, Δv_b = +ma/(ma+mb)·dv).
