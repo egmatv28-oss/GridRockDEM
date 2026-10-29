@@ -4,7 +4,12 @@
 # GridRockDEM
 Prototype Grid (Blocks) DEM Runtime solver for rock mechanics powered by Taichi with comfortable gui. Use Druger-Prager rock model. Created with this agents (Deepseek v4.1 flash and Mimo-v2.6-pro) in Opencode.
 
-https://github.com/user-attachments/assets/33644191-1683-4f5e-88a3-ca6d6247002a
+
+
+https://github.com/user-attachments/assets/b579f000-4dea-4536-879b-717ef85417fe
+
+
+
 
 #How to install
 1) Install Python 3.12 from python.org
@@ -13,7 +18,7 @@ https://github.com/user-attachments/assets/33644191-1683-4f5e-88a3-ca6d6247002a
 4) Use and enjoy. Can change model runtime (add crack, elements, delete elements)
 
 #Bugs
-1) Have some bugs about freezing single blocks (some blocks can freeze in the air), cant fix it right now
+1) Have some bugs about freezing single blocks (some blocks can freeze in the air), cant fix it right now FIXED
 
 #Runtime use
 
