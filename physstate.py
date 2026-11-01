@@ -198,13 +198,8 @@ MAXBONDS = max(24576, 4 * N)
 REFILL_MAXB = N + 1100
 MAXDUST = 240
 MAXSRC = 4
+MAXCHG = 64
 BMAPW = (MAXB + 31) // 32   # слов битовой карты связей (пар блоков)
-MAXNBR = 6   # статический радиус поиска соседей контакта (в клетках);
-             # покрывает блоки до размеров MAXNBR*2 клеток рядом; динамический
-             # радиус фильтруется в рантайме (см. phys_contact). 6 — с запасом на
-             # УГЛЫ повёрнутого квадрата (brot): проекция r·(|cos|+|sin|) длиннее
-             # радиуса вписанного круга (r·√2 на 45°), поэтому углы зацепляются
-             # за соседей дальше, чем круглый "радиус".
 
 # ================================================================ физический масштаб (СИ)
 # ВНУТРЕННЯЯ СИСТЕМА ЕДИНИЦ — СИ: позиции и размеры блоков/воды в МЕТРАХ,
@@ -235,7 +230,7 @@ LOAD_OVER = RHO_R * G_PHYS * LCELL   # Н: вес столба породы гл
 LOAD_TIME = 0.5
 LOAD_RAMP = 1.0 - math.exp(-TICK / 0.3)   # устаревшая экспонента (не используется)
 
-VMAX = 30.0 * LCELL         # м/с: предельная скорость блока (кламп)
+VMAX = float(os.environ.get("GRIDROCKDEM_VMAX", "60.0"))   # м/с: предельная скорость блока (кламп)
 # Пределы импульса от разрыва связи. Энергия связи для мелкого блока даёт
 # dv в сотни м/с, и раньше он упирался только в общий VMAX -> «выстрелы»
 # обломков из рыхляка. Пинок — численный затравок, а не реальная кинетика,
@@ -334,7 +329,6 @@ class Params:
     cnc: ti.f32   # ζ КОНТАКТА блоков (отдельно от связей) — гасит подпрыгивание обломков
     cncR: ti.f32  # ζ КОНТАКТА ДВУХ СВОБОДНЫХ (несвязанных) блоков — перекритическое:
                   # рухляк поглощает удары, обломки не "пружинят" как резина
-    maxSize: ti.i32   # максимальный размер блока в модели (радиус поиска соседей, клетки)
     plastYield: ti.f32   # доля σ_раст (tension), с которой начинается пластическое течение (предел текучести)
     plastLimit: ti.f32   # предельная пластическая деформация (доля длины покоя) — после неё обрыв связи
     plastFlow: ti.f32    # скорость пластического течения: рост остаточной длины за секунду на единицу перегрузки
@@ -374,6 +368,7 @@ class Params:
     absorbWidth: ti.f32  # толщина слоя, клетки
     absorbCoef: ti.f32   # 1/с: скорость затухания скорости в слое
     absorbTop: ti.i32    # 1 = гасить и верхнюю (искусственную) границу
+    blastEff: ti.f32     # доля энергии заряда, переходящая в кинетику блоков
 
 
 P = Params.field(shape=())
@@ -387,6 +382,7 @@ P[None].lbmDrag = 0.0
 P[None].lbmPressure = 0.0
 P[None].tiltC = 1.0
 P[None].tiltS = 0.0
+P[None].blastEff = 0.25
 
 # ------------------------------------------------------------------ поля блоков
 bx = ti.field(ti.f32, MAXB)
@@ -470,8 +466,7 @@ inContact = ti.field(ti.i32, MAXB)   # 1 = блок участвует ХОТЯ 
 cnck = ti.field(ti.f32, MAXB)        # максимальная нормальная сила контакта блока за подшаг
                                      # (Н). С ней масштабируется сопротивление перекатыванию
                                      # (как в реальности: сильнее прижат — сильнее тормоз).
-bsz = ti.field(ti.f32, MAXB)     # размер блока (сторона квадрата), МЕТРЫ
-bmass = ti.field(ti.f32, MAXB)   # масса блока, кг = RHO_R * bsz^2 (толщина 1 м)
+bmass = ti.field(ti.f32, MAXB)   # масса блока, кг = RHO_R * LCELL^2 (толщина 1 м)
 bSxx = ti.field(ti.f32, MAXB)    # прокси σ_xx в точке блока: сумма сжатий связей × ux² (Н)
 bSyy = ti.field(ti.f32, MAXB)    # прокси σ_yy: сумма сжатий связей × uy² (Н) —
                                  # направление главного сжатия для раскалывания (bond_stress_field)
@@ -538,6 +533,11 @@ bondNX = ti.field(ti.f32, MAXBONDS)     # начальное направлен�
 bondNY = ti.field(ti.f32, MAXBONDS)
 bondE = ti.field(ti.f32, MAXBONDS)   # накопленная упругая энергия связи
 bondOpen = ti.field(ti.f32, MAXBONDS) # макс. раскрытие связи (m) для Gf-softening
+bondAnchor = ti.field(ti.i32, MAXBONDS)
+bondK = ti.field(ti.f32, MAXBONDS)
+bondFmax = ti.field(ti.f32, MAXBONDS)
+bondAnchorF = ti.field(ti.f32, MAXBONDS)
+anchorPeak = ti.field(ti.f32, shape=())
 bondCount = ti.field(ti.i32, shape=())
 # наличие связи между парой блоков — битовая карта (вместо сеточной is_bonded):
 # bondMap[a, b>>5] хранит бит b&31. Перестраивается в count_bonds каждый кадр.
@@ -620,7 +620,6 @@ HUD_HEAD = 24
 HUD_RP = 25
 HUD_MU = 26
 HUD_RCFACTOR = 27
-HUD_MAXSIZE = 28
 HUD_E = 29
 HUD_RHO = 30
 HUD_PEAKT = 31   # пик растяжения по сцене (норм. на Rt) — динамическая шкала легенды
@@ -631,6 +630,12 @@ srcX = ti.field(ti.f32, MAXSRC)
 srcY = ti.field(ti.f32, MAXSRC)
 srcPh = ti.field(ti.f32, MAXSRC)
 srcCount = ti.field(ti.i32, shape=())
+chgX = ti.field(ti.f32, MAXCHG)
+chgY = ti.field(ti.f32, MAXCHG)
+chgT = ti.field(ti.i32, MAXCHG)
+chgE = ti.field(ti.f32, MAXCHG)
+chgR = ti.field(ti.f32, MAXCHG)
+chgN = ti.field(ti.i32, shape=())
 
 # пыль (осколки при разрыве связи)
 dustX = ti.field(ti.f32, MAXDUST)
@@ -677,7 +682,7 @@ def block_prj(i: ti.i32) -> ti.f32:
     вылезают за круг и по-настоящему цепляются за соседей, пол и стены.
     Так учёт ГРАНЕЙ работает основным у опрокидывающихся блоков, не расшатывая
     стабильный массив."""
-    r = bsz[i] * 0.5
+    r = LCELL * 0.5
     half = PI * 0.5
     q = brot[i] / half
     q = q - ti.floor(q)
@@ -765,16 +770,14 @@ def bond_stress_field():
         bSxx[i] = 0.0
         bSyy[i] = 0.0
     for bd in range(bondCount[None]):
-        if bondIntact[bd] != BOND_DEAD:
+        if bondIntact[bd] != BOND_DEAD and bondAnchor[bd] == 0:
             a = bondA[bd]
             b = bondB[bd]
             dx = bx[b] - bx[a]
             dy = by[b] - by[a]
             d = ti.sqrt(dx * dx + dy * dy)
             if d > 1e-9 and brest[bd] > 1e-9:
-                w = bsz[a]
-                if bsz[b] < w:
-                    w = bsz[b]
+                w = LCELL
                 tension = P[None].E * w / brest[bd] * (d - brest[bd])
                 if tension < 0.0:
                     c = -tension
@@ -828,7 +831,7 @@ def refresh_field():
 
 
 @ti.func
-def init_block(i: ti.i32, x: ti.f32, y: ti.f32, size: ti.f32, fixed: ti.i32):
+def init_block(i: ti.i32, x: ti.f32, y: ti.f32, fixed: ti.i32):
     bx[i] = x * LCELL
     by[i] = y * LCELL
     bvx[i] = 0.0
@@ -868,37 +871,30 @@ def init_block(i: ti.i32, x: ti.f32, y: ti.f32, size: ti.f32, fixed: ti.i32):
     bw[i] = 0.0
     btor[i] = 0.0
     nbond[i] = 0
-    bsz[i] = size * LCELL
-    bmass[i] = P[None].rho * bsz[i] * bsz[i]
+    bmass[i] = P[None].rho * LCELL * LCELL
     hx[i] = x * LCELL
     hy[i] = y * LCELL
 
 
 @ti.func
-def add_block_func(x: ti.f32, y: ti.f32, size: ti.f32, fixed: ti.i32) -> ti.i32:
-    """Добавить блок произвольного размера в произвольной точке. Возвращает индекс или -1.
-
-    Выделение слота происходит неатомарно (один поток), поэтому вызов применим
-    из последовательных контекстов (gen_tunnel, инструменты). Для массовой
-    параллельной загрузки используйте _load_blocks (детерминированный слот i==k)."""
+def add_block_func(x: ti.f32, y: ti.f32, fixed: ti.i32) -> ti.i32:
+    """Добавить блок единичного размера в произвольной точке. Возвращает индекс или -1."""
     res = -1
     if bcount[None] < MAXB:
         i = bcount[None]
-        init_block(i, x, y, size, fixed)
+        init_block(i, x, y, fixed)
         bcount[None] += 1
         res = i
-        # Радиус поиска контактов в forces_contact зависит от maxSize. Новый
-        # блок не должен оказаться «невидимым» для соседей: расширяем радиус.
-        s = int(ti.ceil(size))
-        ti.atomic_max(P[None].maxSize, s)
     return res
 
 
 @ti.func
-def add_bond_func(a: ti.i32, b: ti.i32, rest: ti.f32, intact: ti.i32):
+def add_bond_func(a: ti.i32, b: ti.i32, rest: ti.f32, intact: ti.i32) -> ti.i32:
     """Связать блоки a и b с длиной покоя rest (в КЛЕТКАХ, переводится в метры)."""
+    res = -1
     if bondCount[None] < MAXBONDS:
         i = ti.atomic_add(bondCount[None], 1)
+        res = i
         bondA[i] = a
         bondB[i] = b
         bondIntact[i] = intact
@@ -913,6 +909,10 @@ def add_bond_func(a: ti.i32, b: ti.i32, rest: ti.f32, intact: ti.i32):
         bondOver[i] = 0.0
         bondSplitAvg[i] = 0.0
         bondBendAvg[i] = 0.0
+        bondAnchor[i] = 0
+        bondK[i] = 0.0
+        bondFmax[i] = 1.0
+        bondAnchorF[i] = 0.0
         dx = bx[b] - bx[a]
         dy = by[b] - by[a]
         d = ti.sqrt(dx * dx + dy * dy)
@@ -924,6 +924,7 @@ def add_bond_func(a: ti.i32, b: ti.i32, rest: ti.f32, intact: ti.i32):
             bondNY[i] = dy / d
         bondE[i] = 0.0
         bondOpen[i] = 0.0
+    return res
 
 
 @ti.func
@@ -987,7 +988,6 @@ def copy_block_state(src: ti.i32, dst: ti.i32):
     nbond[dst] = nbond[src]
     hasL[dst] = hasL[src]
     hasR[dst] = hasR[src]
-    bsz[dst] = bsz[src]
     bmass[dst] = bmass[src]
     bSxx[dst] = bSxx[src]
     bSyy[dst] = bSyy[src]
@@ -1100,6 +1100,10 @@ def compact_bonds():
             bondNY[n] = bondNY[i]
             bondE[n] = bondE[i]
             bondOpen[n] = bondOpen[i]
+            bondAnchor[n] = bondAnchor[i]
+            bondK[n] = bondK[i]
+            bondFmax[n] = bondFmax[i]
+            bondAnchorF[n] = bondAnchorF[i]
             n += 1
         i += 1
     bondCount[None] = n
@@ -1151,7 +1155,7 @@ def decay_bond_damage():
 @ti.func
 def fracture_bond(bd: ti.i32, a: ti.i32, b: ti.i32, crush: ti.i32,
                   strain: ti.f32, shear: ti.f32, relb: ti.f32,
-                  cohesive: ti.i32):
+                  cohesive: ti.i32, kick_on: ti.i32):
     """Разрыв связи: вся накопленная упругая энергия bondE[bd]
     одномоментно переходит в кинетическую энергию осколков.
     Направление — по оси связи (нормаль) + касательная (сдвиг).
@@ -1166,9 +1170,7 @@ def fracture_bond(bd: ti.i32, a: ti.i32, b: ti.i32, crush: ti.i32,
     clear_bond_bit(a, b)
     break_event(a, b, crush)
     if cohesive == 1:
-        wfr = bsz[a]
-        if bsz[b] < wfr:
-            wfr = bsz[b]
+        wfr = LCELL
         ti.atomic_add(energyFrac[None], P[None].Gf * wfr)
 
     # --- направление связи ---
@@ -1190,8 +1192,8 @@ def fracture_bond(bd: ti.i32, a: ti.i32, b: ti.i32, crush: ti.i32,
     E_acc = bondE[bd]          # вся накопленная энергия
     bondE[bd] = 0.0
 
-    if crush == 1 or cohesive == 1:
-        pass   # сжатие/шов или уже рассеяно Gf — «пинка» нет
+    if crush == 1 or cohesive == 1 or kick_on == 0:
+        pass   # сжатие/шов, Gf или медленный крип — «пинка» нет
     else:
         # Приведённая масса из реальных масс блоков (кг):
         ma = bmass[a]
@@ -1236,8 +1238,8 @@ def fracture_bond(bd: ti.i32, a: ti.i32, b: ti.i32, crush: ti.i32,
         bvy[b] += py * sgn_s * dv_s * w_b
 
         if ti.abs(relb) > 1e-6:
-            Ia = bmass[a] * bsz[a] * bsz[a] / 6.0
-            Ib = bmass[b] * bsz[b] * bsz[b] / 6.0
+            Ia = bmass[a] * LCELL * LCELL / 6.0
+            Ib = bmass[b] * LCELL * LCELL / 6.0
             Ired = Ia * Ib / (Ia + Ib + 1e-9)
             # при kick=0 вращательный пинок тоже должен исчезнуть
             E_rot = E_acc * 0.15 if eta > 0.0 else 0.0
@@ -1391,8 +1393,7 @@ def friction_vec(i: ti.i32, j: ti.i32, key: ti.i32, vt: ti.f32, Fn: ti.f32, dt: 
         ti.atomic_add(btor[i], -Ft * (rix * ty - riy * tx))
         ti.atomic_add(btor[j], Ft * (rjx * ty - rjy * tx))
 
-SUBSTEPS = max(64, min(2048, int(os.environ.get("GRIDROCKDEM_SUBSTEPS",
-                                                str(int(round(TICK / ((1.0 / 60.0) / 384))))))))
+SUBSTEPS = max(64, min(2048, int(os.environ.get("GRIDROCKDEM_SUBSTEPS", "512"))))
 DT = TICK / SUBSTEPS              # с: подшаг интегрирования DEM внутри тика
 # Иерархия времени: 1 ШАГ СИМУЛЯЦИИ (тик) = TICK = 1/60 с модели = 1 кадр GUI;
 # внутри тика - SUBSTEPS ПОДШАГОВ по dt = TICK/SUBSTEPS (явный интегратор DEM).

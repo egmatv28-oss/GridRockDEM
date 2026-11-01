@@ -25,6 +25,19 @@ from render import _CAM, _user32, _app_focused
 # сбрасывает её при построении новой сцены.
 
 # ================================================================== инструменты
+@ti.func
+def stamp_bond(i: ti.i32, n: ti.i32):
+    dx = bx[i] - bx[n]
+    dy = by[i] - by[n]
+    rx = LCELL
+    tol = 0.25 * LCELL
+    aligned = ti.abs(dx) <= 0.2 * LCELL or ti.abs(dy) <= 0.2 * LCELL
+    if aligned and ti.abs(dx) <= rx + tol and ti.abs(dy) <= rx + tol:
+        d = ti.sqrt(dx * dx + dy * dy)
+        if d > 1e-9:
+            add_bond_func(n, i, d / LCELL, 1)
+
+
 @ti.kernel
 def stamp_rock(x: ti.f32, y: ti.f32, r: ti.f32):
     cx = int(x)
@@ -41,19 +54,19 @@ def stamp_rock(x: ti.f32, y: ti.f32, r: ti.f32):
                     cell = ay * COLS + ax
                     if r_block[cell] < 0:
                         fixed = 1 if ay >= ROWS - P[None].fixedRows else 0
-                        i = add_block_func(ax + 0.5, ay + 0.5, 1.0, fixed)
+                        i = add_block_func(ax + 0.5, ay + 0.5, fixed)
                         if i >= 0:
                             # Кисть "Rock" - материал как в массиве: полные связи
                             # с соседями (так задают конструкции: балки, плиты,
                             # перекрытия держатся связями). Как в исходном коммите.
                             if ax > 0 and r_block[cell - 1] >= 0:
-                                add_bond_func(r_block[cell - 1], i, 1.0, 1)
+                                stamp_bond(i, r_block[cell - 1])
                             if ax < COLS - 1 and r_block[cell + 1] >= 0:
-                                add_bond_func(i, r_block[cell + 1], 1.0, 1)
+                                stamp_bond(i, r_block[cell + 1])
                             if ay > 0 and r_block[cell - COLS] >= 0:
-                                add_bond_func(r_block[cell - COLS], i, 1.0, 1)
+                                stamp_bond(i, r_block[cell - COLS])
                             if ay < ROWS - 1 and r_block[cell + COLS] >= 0:
-                                add_bond_func(i, r_block[cell + COLS], 1.0, 1)
+                                stamp_bond(i, r_block[cell + COLS])
                             r_block[cell] = i
             ox += 1
         oy += 1
@@ -75,17 +88,17 @@ def stamp_bedrock(x: ti.f32, y: ti.f32, r: ti.f32):
                     cell = ay * COLS + ax
                     b = r_block[cell]
                     if b < 0:
-                        i = add_block_func(ax + 0.5, ay + 0.5, 1.0, 1)
+                        i = add_block_func(ax + 0.5, ay + 0.5, 1)
                         if i >= 0:
                             bbedrock[i] = 3
                             if ax > 0 and r_block[cell - 1] >= 0:
-                                add_bond_func(r_block[cell - 1], i, 1.0, 1)
+                                stamp_bond(i, r_block[cell - 1])
                             if ax < COLS - 1 and r_block[cell + 1] >= 0:
-                                add_bond_func(i, r_block[cell + 1], 1.0, 1)
+                                stamp_bond(i, r_block[cell + 1])
                             if ay > 0 and r_block[cell - COLS] >= 0:
-                                add_bond_func(r_block[cell - COLS], i, 1.0, 1)
+                                stamp_bond(i, r_block[cell - COLS])
                             if ay < ROWS - 1 and r_block[cell + COLS] >= 0:
-                                add_bond_func(i, r_block[cell + COLS], 1.0, 1)
+                                stamp_bond(i, r_block[cell + COLS])
                             r_block[cell] = i
             ox += 1
         oy += 1
@@ -212,8 +225,8 @@ def clear_scene():
     while i < n:
         j = i + 1
         while j < n:
-            ri = bsz[i] * 0.5
-            rj = bsz[j] * 0.5
+            ri = LCELL * 0.5
+            rj = LCELL * 0.5
             dx = bx[j] - bx[i]
             dy = by[j] - by[i]
             axx = ti.abs(dx)
@@ -286,7 +299,6 @@ def crack_line(x0, y0, x1, y1):
     INT = bondIntact.to_numpy()
     bxv = bx.to_numpy()
     byv = by.to_numpy()
-    bszv = bsz.to_numpy()
     nb = int(bondCount[None])
     if nb == 0:
         return 0
@@ -302,14 +314,14 @@ def crack_line(x0, y0, x1, y1):
         b = int(B[bd])
         fx = (bxv[a] + bxv[b]) * 0.5 / LCELL
         fy = (byv[a] + byv[b]) * 0.5 / LCELL
-        ax0 = bxv[a] / LCELL - bszv[a] / (2.0 * LCELL)
-        ax1 = bxv[a] / LCELL + bszv[a] / (2.0 * LCELL)
-        ay0 = byv[a] / LCELL - bszv[a] / (2.0 * LCELL)
-        ay1 = byv[a] / LCELL + bszv[a] / (2.0 * LCELL)
-        bx0 = bxv[b] / LCELL - bszv[b] / (2.0 * LCELL)
-        bx1 = bxv[b] / LCELL + bszv[b] / (2.0 * LCELL)
-        by0 = byv[b] / LCELL - bszv[b] / (2.0 * LCELL)
-        by1 = byv[b] / LCELL + bszv[b] / (2.0 * LCELL)
+        ax0 = bxv[a] / LCELL - 0.5
+        ax1 = bxv[a] / LCELL + 0.5
+        ay0 = byv[a] / LCELL - 0.5
+        ay1 = byv[a] / LCELL + 0.5
+        bx0 = bxv[b] / LCELL - 0.5
+        bx1 = bxv[b] / LCELL + 0.5
+        by0 = byv[b] / LCELL - 0.5
+        by1 = byv[b] / LCELL + 0.5
         if abs(bxv[a] - bxv[b]) < abs(byv[a] - byv[b]):
             # связь вертикальная -> грань горизонтальная (y = iy, x-диапазон)
             iy = int(round(fy))
@@ -586,20 +598,6 @@ def run_selftest(frames=120):
           (nwater, fp, broken[None], t_wat))
     print("selftest: WARNING — water not created" if nwater == 0 else "")
 
-    # мозаика произвольных размеров
-    t0 = time.perf_counter()
-    generate(2, 0)
-    ms = P[None].maxSize
-    for f in range(20):
-        step_physics(2, DT)
-    t_big = time.perf_counter() - t0
-    print(
-        "selftest: big blocks n=%d maxSize=%d intact=%d broken=%d (%.2fs)"
-        % (bcount[None], ms, count_intact(), broken[None], t_big)
-    )
-    if broken[None] > bcount[None] // 4:
-        print("selftest: WARNING — big blocks collapsed (broken=%d)" % broken[None])
-
     # рендер одного кадра (без окна)
     t0 = time.perf_counter()
     render_base()
@@ -609,6 +607,7 @@ def run_selftest(frames=120):
     render_blocks(1)
     render_joints()
     render_bonds(1, 1)
+    render_anchors(0)
     render_cracks()
     render_dust()
     render_sources(0.0)
@@ -648,8 +647,7 @@ def run_gui():
     show_bonds = 1
     E_GPa = 10
     rho = RHO_R
-    scene_names = {0: "Circular working", 1: "Slope", 2: "Large blocks",
-                   3: "Standard working"}
+    scene_names = {0: "Circular working", 1: "Slope", 3: "Standard working"}
     # активный верификационный пресет: "none" | "ucs" | "brazil".
     # Kirsch — это обычная сцена «vyrabotka», поэтому test_kind остаётся "none".
     test_kind = "none"
@@ -689,16 +687,27 @@ def run_gui():
     buf_model = ""            # буфер набора угла модели, град
     show_rock = False         # группа "настройки породы" (материал) развёрнута
     show_solver = False       # группа "настройки решателя" (время/устойчивость) развёрнута
+    show_blast = False        # группа "настройки шпура" развёрнута
+    show_anchor = False       # группа "настройки анкера" развёрнута
+    anchor_p0 = None          # первая точка анкера (клетки)
+    anchor_pretension_kn = 50.0
+    anchor_stiffness_mn = 50.0
+    anchor_strength_kn = 200.0
+    blast_energy_mj = 2.0     # энергия заряда, МДж
+    blast_radius_cells = 3.0  # радиус влияния взрыва, клетки
+    blast_delay = 10          # тиков до взрыва
+    blast_eff_pct = 25        # доля энергии заряда в кинетику блоков
     scene_slots = ["scene1", "scene2", "scene3", "scene4", "scene5",
                    "scene6", "scene7", "scene8", "scene9"]  # слоты сохранений (JSON)
     scene_idx = 0             # выбранный слот сохранения/загрузки
     legend_on = False         # легенда напряжений (кнопка под START)
+    anchor_legend_on = False  # легенда/линии усилий только по анкерам
     hud_cache = None          # кэш снимка HUD (hudF.to_numpy() — синхронизация!)
     hud_refresh = -1.0        # когда обновляли кэш (perf_counter)
     freeze_t = -1.0           # диагностика зависших блоков (в консоль, раз в 3 с)
 
     def preset_rock(E=10.0, rp=4.0, rc=40.0, mu=0.62):
-        nonlocal E_GPa, rho, weak, tilt_deg, show_rock, show_solver
+        nonlocal E_GPa, rho, weak, tilt_deg, show_rock, show_solver, show_blast, show_anchor
         E_GPa = int(round(E))
         rho = RHO_R
         weak = 0
@@ -732,6 +741,8 @@ def run_gui():
         loadXCur[None] = 0.0
         show_rock = False
         show_solver = True
+        show_blast = False
+        show_anchor = False
 
     while window.running:
         now = time.perf_counter()
@@ -820,6 +831,10 @@ def run_gui():
                         crack_p0 = None
                         flash_msg = "Crack cancelled"
                         flash_wall = now
+                    elif anchor_p0 is not None:
+                        anchor_p0 = None
+                        flash_msg = "Anchor cancelled"
+                        flash_wall = now
                     elif buf_sloi or buf_model:
                         buf_sloi = ""
                         buf_model = ""
@@ -860,6 +875,39 @@ def run_gui():
                     if tool == 2:
                         flash_msg = place_source(mx, my)
                         flash_wall = now
+                    elif tool == 5:
+                        res = add_charge_host(mx, my, blast_energy_mj * 1e6,
+                                              blast_radius_cells * LCELL,
+                                              blast_delay)
+                        if res == 1:
+                            flash_msg = ("Blast hole placed: %.1f MJ, R=%g cells, %d ticks"
+                                         % (blast_energy_mj, blast_radius_cells, blast_delay))
+                        elif res == -1:
+                            flash_msg = "Blast charge limit reached"
+                        else:
+                            flash_msg = "Blast hole: click on a block"
+                        flash_wall = now
+                    elif tool == 6:
+                        if anchor_p0 is None:
+                            anchor_p0 = (int(mx) + 0.5, int(my) + 0.5)
+                            flash_msg = "Anchor: first block selected, click second"
+                        else:
+                            res = add_anchor_host(anchor_p0[0], anchor_p0[1], mx, my,
+                                                  anchor_pretension_kn * 1000.0,
+                                                  anchor_stiffness_mn * 1e6,
+                                                  anchor_strength_kn * 1000.0)
+                            if res == 1:
+                                flash_msg = "Anchor placed: %.0f kN" % anchor_pretension_kn
+                            elif res == 2:
+                                flash_msg = "Anchor updated: %.0f kN" % anchor_pretension_kn
+                            elif res == -2:
+                                flash_msg = "Anchor: pretension >= strength"
+                            elif res == -3:
+                                flash_msg = "Anchor: stiffness too low for pretension"
+                            else:
+                                flash_msg = "Anchor: click on two blocks"
+                            anchor_p0 = None
+                        flash_wall = now
                     elif tool == 1:
                         # трещина задаётся ДВУМЯ кликами (как в AutoCAD):
                         # 1-й — точка, между кликами линия следует за курсором,
@@ -885,6 +933,20 @@ def run_gui():
                             stamp_unbedrock(mx, my, brush / 2.0 + 0.4)
                             flash_msg = "Bedrock cleared"
                             flash_wall = now
+                    elif tool == 5:
+                        if not panel_zone(pos):
+                            if remove_charge_host(mx, my, blast_radius_cells):
+                                flash_msg = "Blast charge removed"
+                            else:
+                                flash_msg = "No blast charge here"
+                            flash_wall = now
+                    elif tool == 6:
+                        if not panel_zone(pos):
+                            if remove_anchor_host(mx, my, brush / 2.0 + 0.4):
+                                flash_msg = "Anchor removed"
+                            else:
+                                flash_msg = "No anchor here"
+                            flash_wall = now
                     elif remove_source(mx, my):
                         flash_msg = "Water source removed"
                         flash_wall = now
@@ -904,7 +966,7 @@ def run_gui():
             pos = window.get_cursor_pos()
             if not panel_zone(pos):
                 mx, my = cursor_to_cells(pos)
-                if tool not in (1, 2) and last_mx >= 0:
+                if tool not in (1, 2, 5, 6) and last_mx >= 0:
                     last_mx, last_my = do_stroke(mx, my, last_mx, last_my, tool, brush)
 
         # перетаскивание камеры СКМ (колесо мыши): состояние кнопки опросом
@@ -994,6 +1056,14 @@ def run_gui():
             # под START — переключатель легенды напряжений
             if gui.button("Hide legend" if legend_on else "Show legend"):
                 legend_on = not legend_on
+                if legend_on:
+                    anchor_legend_on = False
+            if gui.button("Hide anchor legend" if anchor_legend_on else "ANCHOR LEGEND"):
+                anchor_legend_on = not anchor_legend_on
+                if anchor_legend_on:
+                    legend_on = False
+            if anchor_legend_on:
+                gui.text("Anchor forces, kN (only anchor lines shown)")
             if legend_on:
                 pkT = hud[HUD_PEAKT] if hud[HUD_PEAKT] > 1e-4 else 1.0
                 pkC = hud[HUD_PEAKC] if hud[HUD_PEAKC] > 1e-4 else 1.0
@@ -1028,6 +1098,18 @@ def run_gui():
             if gui.button("Bedrock"):
                 tool = 4
                 crack_p0 = None
+            if gui.button("Blast hole"):
+                tool = 5
+                crack_p0 = None
+                anchor_p0 = None
+                flash_msg = "Blast hole: click a block"
+                flash_wall = now
+            if gui.button("Anchor"):
+                tool = 6
+                crack_p0 = None
+                anchor_p0 = None
+                flash_msg = "Anchor: click first block"
+                flash_wall = now
             if gui.button("Crack"):
                 tool = 1
                 crack_p0 = None
@@ -1043,9 +1125,23 @@ def run_gui():
             if gui.button("ROCK SETTINGS"):
                 show_rock = True
                 show_solver = False
+                show_blast = False
+                show_anchor = False
             if gui.button("SOLVER SETTINGS"):
                 show_solver = True
                 show_rock = False
+                show_blast = False
+                show_anchor = False
+            if gui.button("BLAST SETTINGS"):
+                show_blast = True
+                show_rock = False
+                show_solver = False
+                show_anchor = False
+            if gui.button("ANCHOR SETTINGS"):
+                show_anchor = True
+                show_rock = False
+                show_solver = False
+                show_blast = False
 
             if show_rock:
                 gui.text("--- ROCK (material) ---")
@@ -1112,6 +1208,28 @@ def run_gui():
                 if v != cur:
                     P[None].dmgDecay = v
 
+            if show_blast:
+                gui.text("--- BLAST (charge / hole) ---")
+                blast_energy_mj = gui.slider_float("Charge energy, MJ",
+                                                    blast_energy_mj, 0.1, 20.0)
+                blast_radius_cells = gui.slider_float("Blast radius, cells",
+                                                      blast_radius_cells, 1.0, 8.0)
+                blast_delay = gui.slider_int("Fuse, ticks", blast_delay, 1, 60)
+                blast_eff_pct = gui.slider_int("Energy to motion, %",
+                                               blast_eff_pct, 5, 100)
+                P[None].blastEff = blast_eff_pct / 100.0
+                gui.text("LMB - charge block, RMB - remove charge")
+
+            if show_anchor:
+                gui.text("--- ANCHOR (bolt / pretension) ---")
+                anchor_pretension_kn = gui.slider_float("Pretension, kN",
+                                                        anchor_pretension_kn, 0.0, 500.0)
+                anchor_stiffness_mn = gui.slider_float("Stiffness, MN/m",
+                                                       anchor_stiffness_mn, 1.0, 500.0)
+                anchor_strength_kn = gui.slider_float("Tensile strength, kN",
+                                                      anchor_strength_kn, 10.0, 1000.0)
+                gui.text("LMB - first block, then second * RMB - remove")
+
             if show_solver:
                 gui.text("--- SOLVER (time/stability/load) ---")
                 # Глубина и K0 — вверху: это главные параметры нагружения.
@@ -1142,7 +1260,7 @@ def run_gui():
                                          cur, 10.0, 1000.0)
                     if abs(v - cur) > 1e-6:
                         brazil_rate = v * 1e3
-                cur = P[None].substeps if P[None].substeps > 0 else 384
+                cur = P[None].substeps if P[None].substeps > 0 else SUBSTEPS
                 ns = gui.slider_int("Substeps/tick (x64)", cur // 64, 1, 32)
                 ns = max(64, min(2048, ns * 64))
                 if ns != cur:
@@ -1597,6 +1715,8 @@ def run_gui():
                 try:
                     d = presets.load_scene(sfile)
                     mode = int(d.get("mode", 0))
+                    if mode not in scene_names:
+                        mode = 0
                     weak = int(d.get("weak", 0))
                     tilt_deg = float(d.get("tilt_deg", 0.0))
                     test_label = d.get("test") or ""
@@ -1609,6 +1729,10 @@ def run_gui():
                     rho = float(P[None].rho)
                     show_solver = True
                     show_rock = False
+                    show_blast = False
+                    show_anchor = False
+                    anchor_legend_on = False
+                    blast_eff_pct = max(5, min(100, int(round(P[None].blastEff * 100.0))))
                     srcCount[None] = 0
                     clear_ext_forces()
                     cam = d.get("camera")
@@ -1699,7 +1823,11 @@ def run_gui():
         stress_peaks()   # пики напряжений — динамическая шкала легенды
         render_blocks(1 if legend_on else 0)
         render_joints()
-        render_bonds(show_bonds, 1 if legend_on else 0)
+        render_bonds(0 if anchor_legend_on else show_bonds, 1 if legend_on else 0)
+        if anchor_legend_on:
+            anchor_peaks()
+        render_anchors(1 if anchor_legend_on else 0)
+        render_blast()
         render_cracks()
         render_dust()
         render_sources(t_sim)
@@ -1711,6 +1839,9 @@ def run_gui():
             if tool == 1 and crack_p0 is not None:
                 # резиновая линия трещины от 1-й точки до курсора
                 render_rubber(crack_p0[0], crack_p0[1], mx, my)
+            elif tool == 6 and anchor_p0 is not None:
+                render_anchor_rubber(anchor_p0[0], anchor_p0[1],
+                                     int(mx) + 0.5, int(my) + 0.5)
         else:
             render_mouse(-999.0, 0.0, brush, 0)
 
@@ -1724,7 +1855,9 @@ def run_gui():
             render.rot_view(math.radians(presets.model_angle), scx, scy)
             render.paste_rot()
 
-        if legend_on:
+        if anchor_legend_on:
+            render_anchor_legend()
+        elif legend_on:
             render_stress_legend(hud[HUD_RP], hud[HUD_RP] * hud[HUD_RCFACTOR])
         if recorder is not None and t_sim + 1e-9 >= record_next:
             try:

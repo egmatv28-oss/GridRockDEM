@@ -87,12 +87,36 @@ def forces_bonds(dt: ti.f32):
         rvy = bvy[b] - bvy[a]
         vn = rvx * ux + rvy * uy
         # --- геометрия контакта (СИ) ---
-        w = bsz[a]
-        if bsz[b] < w:
-            w = bsz[b]          # ширина шва = меньший блок, м
+        w = LCELL          # ширина шва, м
         ma = bmass[a]
         mb = bmass[b]
         mred = ma * mb / (ma + mb + 1e-9)
+        if bondAnchor[bd] == 1:
+            F = bondK[bd] * (d - brest[bd])
+            if F < 0.0:
+                F = 0.0
+            cd = 2.0 * ti.sqrt(bondK[bd] * mred)
+            cdCap = 0.25 * mred / dt
+            if cd > cdCap:
+                cd = cdCap
+            F += cd * vn
+            if F < 0.0:
+                F = 0.0
+            if bondAnchorF[bd] <= 0.0:
+                bondAnchorF[bd] = F
+            else:
+                bondAnchorF[bd] += (F - bondAnchorF[bd]) * (dt / (0.15 + dt))
+            bondR[bd] = bondAnchorF[bd] / (bondFmax[bd] + 1e-9)
+            if F > bondFmax[bd]:
+                bondIntact[bd] = BOND_DEAD
+                clear_bond_bit(a, b)
+                ti.atomic_add(broken[None], 1)
+            else:
+                bfx[b] -= F * ux
+                bfy[b] -= F * uy
+                bfx[a] += F * ux
+                bfy[a] += F * uy
+            continue
         k_ax = E * w / brest[bd]    # жёсткость связи, Н/м
         # предел устойчивости явной схемы (см. STAB_C): k ≤ C·m_red/dt²
         kstab = P[None].stabC * mred / (dt * dt)
@@ -335,8 +359,8 @@ def forces_bonds(dt: ti.f32):
         bondBendAvg[bd] += (rel - bondBendAvg[bd]) * (dt / (0.15 + dt))
         rw = bw[b] - bw[a]
         krot = k_ax * w * w / 12.0             # Н·м/рад
-        Ia = bmass[a] * bsz[a] * bsz[a] / 6.0
-        Ib = bmass[b] * bsz[b] * bsz[b] / 6.0
+        Ia = bmass[a] * LCELL * LCELL / 6.0
+        Ib = bmass[b] * LCELL * LCELL / 6.0
         Ired = Ia * Ib / (Ia + Ib + 1e-9)
         # демпфер поворота связи (ζ≈0.8 для пары). ОГРАНИЧЕНИЕ ПО СТАБИЛЬНОСТИ:
         # в решётке блок участвует в nbond связях, и в шахматной моде вращения
@@ -523,13 +547,13 @@ def forces_bonds(dt: ti.f32):
         cohesive = 1 if cohD >= 1.0 else 0
         if overE == 1 and bfixBond == 0 and shell == 0:
             if try_fracture(bd, a, b, crushE):
-                fracture_bond(bd, a, b, crushE, strain, off, rel, cohesive)
+                fracture_bond(bd, a, b, crushE, strain, off, rel, cohesive, 1)
         elif bfixBond == 0 and shell == 0 and anyOver == 1 and bondCreep[bd] >= P[None].plastLimit * brest[bd]:
             crush = 0
             if tension < -1e-6:
                 crush = 1
             if try_fracture(bd, a, b, crush):
-                fracture_bond(bd, a, b, crush, strain, off, rel, 0)
+                fracture_bond(bd, a, b, crush, strain, off, rel, 0, 0)
 
 
 # ================================================================== геометрия контакта квадратов
@@ -768,14 +792,7 @@ def apply_contact_point(i: ti.i32, j: ti.i32, fkey: ti.i32, pt: ti.i32,
 @ti.func
 def forces_contact(dt: ti.f32):
     k_c = P[None].E * 0.1   # жёсткость контакта полной ширины (Н/м), k = E·A/L
-    # динамический радиус поиска в клетках: описанная окружность квадрата r·√2
-    # + запас на PROX (пре-контакт для phys_rock)
-    RR = int(ti.ceil(P[None].maxSize * 1.5))
-    # минимум 2 клетки: при maxSize=0 радиус был 0 и блоки «видели» друг друга
-    # только после проникновения на полклетки — контакт срабатывал с огромным
-    # перехлёстом и выбрасывал блок (диагностированные «выстрелы»).
-    if RR < 2:
-        RR = 2
+    RR = 2
     # флаги граней собираются ЗДЕСЬ (размер-осведомлённо, каждый подшаг) — не в
     # клеточном поле gOcc. По умолчанию грань свободна (1), трещины/опоры нет (0);
     # нюанс-init в начале каждого витка параллельного цикла обязателен: ниже флаги
@@ -794,14 +811,12 @@ def forces_contact(dt: ti.f32):
     for i in range(bcount[None]):
         cxi = clamp_cell(bx[i])
         cyi = clamp_cell(by[i])
-        ri = bsz[i] * 0.5          # ПОЛОВИНА СТОРОНЫ квадрата (без раздутия проекций)
+        ri = LCELL * 0.5          # ПОЛОВИНА СТОРОНЫ квадрата (без раздутия проекций)
         cir = ri * 1.41421356      # описанный радиус: предел досягаемости углов
         cti = ti.cos(brot[i])
         sti = ti.sin(brot[i])
-        rx = block_prj(i)          # только для size-aware флагов граней ниже
-        # радиус поиска — динамический (±RR клеток): без статических 13×13 итераций
-        # на блок (MAXNBR), которые почти все отсеивались фильтром — минус ~85%
-        # холостых проходов хэша на подшаг
+        rx = block_prj(i)          # для флагов граней ниже
+        # радиус поиска ±RR клеток: кубы единичного размера, статический радиус
         for oy in range(-RR, RR + 1):
             yy = cyi + oy
             if yy >= 0 and yy < ROWS:
@@ -813,12 +828,12 @@ def forces_contact(dt: ti.f32):
                             if j > i:
                                 dx = bx[j] - bx[i]
                                 dy = by[j] - by[i]
-                                rj = bsz[j] * 0.5
+                                rj = LCELL * 0.5
                                 rxj = block_prj(j)
                                 rs = rx + rxj
                                 lat = rs
                                 GAP = 0.25 * lat
-                                # ---- геометрические флаги (size-aware), для ВСЕХ пар ----
+                                # ---- геометрические флаги, для ВСЕХ пар ----
                                 # тот же "этаж" (без вертикального смещения больше лат*0.95):
                                 if ti.abs(dy) < lat * 0.95:
                                     # j правее i в пределах lat+GAP
@@ -871,7 +886,7 @@ def forces_contact(dt: ti.f32):
                                                     # мягко (0.2). Сила по-прежнему приложена
                                                     # В ТОЧКАХ пятна — момент от ЦТ честный.
                                                     W = pts[2, 1]
-                                                    sAvg = 0.5 * (bsz[i] + bsz[j])
+                                                    sAvg = LCELL
                                                     wFrac = W / sAvg
                                                     if npts == 1 or wFrac < 0.2:
                                                         wFrac = 0.2
@@ -893,7 +908,7 @@ def forces_contact(dt: ti.f32):
                                                     cd = 2.0 * zc * ti.sqrt(kpt * mred)
                                                     # страховка от глубокого проникновения
                                                     # (быстрый удар): δ ≤ 30% меньшего блока
-                                                    dMax = 0.3 * ti.min(bsz[i], bsz[j])
+                                                    dMax = 0.3 * LCELL
                                                     d0 = ti.min(pts[0, 2], dMax)
                                                     d1 = 0.0
                                                     p0x = pts[0, 0]
@@ -951,9 +966,8 @@ def forces_contact(dt: ti.f32):
                                                         elif closure > 1.0:
                                                             closure = 1.0
                                                         # нормаль сжатия закрытой трещины: σ_h·h = coef·sv·n
-                                                        # (n — высота трещины в клетках = меньший блок); для n=1
-                                                        # как раньше, для крупных — масштаб по грани, а не «на клетку»
-                                                        hCrack = ti.min(bsz[i], bsz[j]) / LCELL
+                                                        # (n — высота трещины в клетках; у куба n=1)
+                                                        hCrack = 1.0
                                                         Fconf = sv * coef * closure * hCrack
                                                         FnTot = Fn0 + Fn1
                                                         # Fconf только УСИЛИВАЕТ уже существующую
@@ -983,7 +997,7 @@ def forces_contact(dt: ti.f32):
             supp[i] = 1
             comIn[i] = 1
         elif supp[i] == 1:
-            m = 0.05 * bsz[i]
+            m = 0.05 * LCELL
             if bx[i] >= supLo[i] - m and bx[i] <= supHi[i] + m:
                 comIn[i] = 1
 
@@ -1019,7 +1033,7 @@ def forces_rock():
             continue
         if nbond[i] > 0:
             continue
-        r = bsz[i] * 0.5
+        r = LCELL * 0.5
         m = bmass[i]
         rx = block_prj(i)
         on_floor = by[i] >= ROWS * LCELL - rx - 0.30 * LCELL

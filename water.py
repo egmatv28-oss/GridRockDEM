@@ -17,7 +17,7 @@ Run the smoke test with:
 import taichi as ti
 
 from physstate import (COLS, ROWS, N, LCELL, TICK, bcount, bx, by, bvx, bvy,
-                       bsz, clamp_cell, row_cell, gOcc, wfx, wfy, srcX, srcY,
+                       clamp_cell, row_cell, gOcc, wfx, wfy, srcX, srcY,
                        srcCount)
 
 EPS = 1.0e-5
@@ -228,8 +228,8 @@ def water_apply_forces(drag: ti.f32, pressure_scale: ti.f32):
         c = flat(cx, cy)
         if solid[c] == 0 and fill[c] > 0.05:
             w = fill[c]
-            wfx[i] += drag * (ux[c] - bvx[i]) * bsz[i] * w
-            wfy[i] += drag * (uy[c] - bvy[i]) * bsz[i] * w
+            wfx[i] += drag * (ux[c] - bvx[i]) * LCELL * w
+            wfy[i] += drag * (uy[c] - bvy[i]) * LCELL * w
 
 
 def water_init_host(rho0=1.0):

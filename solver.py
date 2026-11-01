@@ -178,20 +178,8 @@ def forces_integrate(dt: ti.f32, dfree: ti.f32, dsupp: ti.f32, drotFree: ti.f32,
             nF = bmass[i] * P[None].g * tc + cnck[i]
         if nF < bmass[i] * P[None].g * tc:
             nF = bmass[i] * P[None].g * tc
-        # Нормаль трения о СТЕНКУ — только реальное контактное сжатие cnck.
-        # sideF на КРАЙНЕМ блоке строки направлена ВНУТРЬ домена, т.е. ОТ
-        # этой стены, и не является реакцией стены: |sideF| давал свободному
-        # блоку у стены фиктивное вертикальное трение и «приклеивал» его.
-        nFw = cnck[i]
         if by[i] <= rx + 0.02 * LCELL or by[i] >= (ROWS * LCELL - rx - 0.02 * LCELL):
             friction_against(i, bvx[i], nF, dt, -(i + 1), kfric, 0)
-        # трение о БОКОВЫЕ стены — только для рухляка (nbond==0): связанный массив
-        # несёт вес связями вниз, а не висит на искусственных границах домена
-        # (иначе трение стены забирает часть веса столба и σ_v в поле занижается,
-        # а при плавном наборе перегруза режим "зависания" ещё сильнее)
-        if walls == 1 and nbond[i] == 0:
-            if bx[i] <= rx + 0.02 * LCELL or bx[i] >= (COLS * LCELL - rx - 0.02 * LCELL):
-                friction_against(i, bvy[i], nFw, dt, -(i + 1) - FRIC_SLOTS, kfric, 1)
         bvx[i] += bfx[i] / bmass[i] * dt
         bvy[i] += bfy[i] / bmass[i] * dt
         # Связанные и опирающиеся блоки гасятся сильно (устойчивость массива,
@@ -211,7 +199,7 @@ def forces_integrate(dt: ti.f32, dfree: ti.f32, dsupp: ti.f32, drotFree: ti.f32,
         else:
             bvx[i] *= dsupp
             bvy[i] *= dsupp
-        bw[i] += btor[i] / (bmass[i] * bsz[i] * bsz[i] / 6.0) * dt
+        bw[i] += btor[i] / (bmass[i] * LCELL * LCELL / 6.0) * dt
         if nbond[i] > 0:
             bw[i] *= drotBond
         else:
@@ -543,7 +531,7 @@ def compute_side_load_fused(mode: ti.i32):
     породы над точкой + перегруз (sigVI, обновляется каждый подшаг).
     Престресса в модели НЕТ - боковое обжатие передаётся реальными силами
     через связи/контакты, как и вертикальное.
-    F = σ_h · высота грани = K0·(sv/LCELL)·bsz. Работает в режиме шахты
+    F = σ_h · высота грани = K0·(sv/LCELL)·LCELL. Работает в режиме шахты
     (mode==0), как и верхняя нагрузка; при K0=0 силы нет.
     Нагрузка — на КРАЙНИЕ блоки строк (sideLIdx/sideRIdx), т.е. на
     деформируемую границу, а не на фиксированную полосу у кромки домена."""
@@ -558,13 +546,13 @@ def compute_side_load_fused(mode: ti.i32):
                     sv = sigVI[r * COLS + clamp_cell(bx[i])]
                     if sv > 0.0:
                         # блок на ЛЕВОЙ границе -> давит вправо, в массив
-                        sideF[i] += k0 * sv * (bsz[i] / LCELL)
+                        sideF[i] += k0 * sv
                 j = sideRIdx[r]
                 if j >= 0:
                     sv = sigVI[r * COLS + clamp_cell(bx[j])]
                     if sv > 0.0:
                         # блок на ПРАВОЙ границе -> давит влево
-                        sideF[j] -= k0 * sv * (bsz[j] / LCELL)
+                        sideF[j] -= k0 * sv
 
 
 @ti.kernel
@@ -597,17 +585,17 @@ def refill_top_overburden(mode: ti.i32):
             # верхняя клетка (y=0) свободна, если в колонке вообще нет блока,
             # либо самый верхний блок опустился ниже неё (координаты в м).
             # Новый блок центра y=0.5 клетки, его нижняя грань = LCELL, поэтому
-            # нужен зазор: bestY - bsz/2 >= LCELL. Без учёта размера блок
+            # нужен зазор: bestY - LCELL/2 >= LCELL. Без учёта размера блок
             # спавнился ПЕРЕКРЫТЫМ с верхним и контакт выбрасывал его вверх
             # (симптом «обломки выстреливают» при включённой досыпке).
             # -2 = «нужен спавн», реальный индекс заполнит серийный проход ниже
-            if best < 0 or bestY >= LCELL + 0.5 * bsz[best]:
+            if best < 0 or bestY >= 1.5 * LCELL:
                 newRubble[col] = -2
     # 2. досыпаем блоки в колонки с пустой верхней клеткой (серийно)
     c = 0
     while c < COLS:
         if on == 1 and newRubble[c] == -2:
-            j = add_block_func(c + 0.5, 0.5, 1.0, 0)
+            j = add_block_func(c + 0.5, 0.5, 0)
             if j >= 0:
                 newRubble[c] = j
             else:
@@ -682,6 +670,7 @@ def reset_all():
     loadXCur[None] = 0.0
     filledFlag[None] = 0
     srcCount[None] = 0
+    chgN[None] = 0
     simT[None] = 0.0
     compactT[None] = 0.0
     frameBrk[None] = 0
@@ -689,7 +678,10 @@ def reset_all():
     energyFrac[None] = 0.0
     breakCrush[None] = 0
     dmax[None] = 0.0
-    P[None].maxSize = 1
+    stressPeakRaw[0] = 0.0
+    stressPeakRaw[1] = 0.0
+    stressPeak[0] = 0.0
+    stressPeak[1] = 0.0
     for c in range(N):
         hhead[c] = -1
         gOcc[c] = 0
@@ -753,7 +745,7 @@ def reset_all():
 @ti.kernel
 def update_mass_rho():
     for i in range(bcount[None]):
-        bmass[i] = P[None].rho * bsz[i] * bsz[i]
+        bmass[i] = P[None].rho * LCELL * LCELL
 
 
 @ti.kernel
@@ -775,7 +767,7 @@ def clear_ext_forces():
 def _load_blocks(blocks: ti.types.ndarray()):
     for k in range(blocks.shape[0]):
         if k < MAXB:
-            init_block(k, blocks[k, 0], blocks[k, 1], blocks[k, 2], ti.cast(blocks[k, 3], ti.i32))
+            init_block(k, blocks[k, 0], blocks[k, 1], ti.cast(blocks[k, 2], ti.i32))
 
 
 @ti.kernel
@@ -805,7 +797,7 @@ def _load_water(water: ti.types.ndarray()):
 def build_model(blocks, bonds, water, cavity):
     """Загрузить модель, построенную снаружи (render.py).
 
-    blocks — [(x, y, size, fixed), ...]   позиция центра, размер (сторона), флаг закрепления
+    blocks — [(x, y, fixed), ...]    позиция центра, флаг закрепления
     bonds  — [(a, b, rest, intact), ...]  индексы блоков, длина покоя, целостность
     water  — [(x, y, v, ang), ...]        частицы воды
     cavity — (cx, cy, rx, ry) или None    полость (для диагностики заполнения)
@@ -816,12 +808,6 @@ def build_model(blocks, bonds, water, cavity):
         cavY[None] = cavity[1]
         cavRX[None] = cavity[2]
         cavRY[None] = cavity[3]
-    maxs = 1.0
-    if blocks:
-        for b in blocks:
-            if b[2] > maxs:
-                maxs = b[2]
-    P[None].maxSize = max(1, int(math.ceil(maxs)))
     if blocks:
         nb = min(len(blocks), MAXB)
         bcount[None] = nb
@@ -960,6 +946,303 @@ def emit_sources():
 # только после полного расчёта предыдущего (никакой привязки к кадрам или
 # реальному времени — скорость тиков ограничена только CPU). Подшаги интегрирования
 # внутри тика — локальная деталь решателя; наружу виден только тик.
+
+# ================================================================== шпуры/взрыв
+_blast_active = False
+
+
+@ti.kernel
+def blast_countdown():
+    for k in range(chgN[None]):
+        chgT[k] -= 1
+
+
+@ti.kernel
+def blast_apply(cx: ti.f32, cy: ti.f32, R: ti.f32, v0: ti.f32):
+    for j in range(bcount[None]):
+        if bfixed[j] == 1 or bbedrock[j] != 0:
+            continue
+        dx = bx[j] - cx
+        dy = by[j] - cy
+        d2 = dx * dx + dy * dy
+        if d2 <= R * R:
+            d = ti.sqrt(d2)
+            w = 1.0 - d / (R + 1e-9)
+            if w < 0.0:
+                w = 0.0
+            dv = v0 * ti.sqrt(w)
+            if d > 1e-9:
+                bvx[j] += dv * dx / d
+                bvy[j] += dv * dy / d
+    r_break = 0.65 * R
+    for bd in range(bondCount[None]):
+        if bondIntact[bd] != BOND_INTACT:
+            continue
+        a = bondA[bd]
+        b = bondB[bd]
+        mx = (bx[a] + bx[b]) * 0.5 - cx
+        my = (by[a] + by[b]) * 0.5 - cy
+        if mx * mx + my * my <= r_break * r_break:
+            bondIntact[bd] = BOND_JOINT
+            bondDmg[bd] = P[None].dmgMax
+            clear_bond_bit(a, b)
+            ti.atomic_add(broken[None], 1)
+    d = ti.atomic_add(dustCount[None], 1)
+    if d < MAXDUST:
+        dustX[d] = cx
+        dustY[d] = cy
+        dustVX[d] = (ti.random() - 0.5) * 0.4
+        dustVY[d] = (ti.random() - 0.5) * 0.4
+        dustLife[d] = 1.0
+        dustCol[d] = 1
+
+
+@ti.kernel
+def blast_remove(rm: ti.i32):
+    if rm >= 0 and rm < bcount[None]:
+        remove_block_func(rm)
+
+
+@ti.kernel
+def add_anchor_kernel(a: ti.i32, b: ti.i32, rest_cells: ti.f32,
+                      k_ax: ti.f32, fmax: ti.f32):
+    i = add_bond_func(a, b, rest_cells, 1)
+    if i >= 0:
+        bondAnchor[i] = 1
+        bondK[i] = k_ax
+        bondFmax[i] = fmax
+
+
+@ti.kernel
+def update_anchor_kernel(bd: ti.i32, rest_cells: ti.f32,
+                         k_ax: ti.f32, fmax: ti.f32):
+    if bd >= 0 and bd < bondCount[None]:
+        brest[bd] = rest_cells * LCELL
+        bondK[bd] = k_ax
+        bondFmax[bd] = fmax
+        bondDmg[bd] = 0.0
+
+
+@ti.kernel
+def kill_anchor_kernel(bd: ti.i32):
+    if bd >= 0 and bd < bondCount[None]:
+        a = bondA[bd]
+        b = bondB[bd]
+        clear_bond_bit(a, b)
+        bondIntact[bd] = BOND_DEAD
+        bondAnchor[bd] = 0
+
+
+def _nearest_block(cx, cy):
+    n = int(bcount[None])
+    if n <= 0:
+        return -1, 0.0
+    x = bx.to_numpy()[:n]
+    y = by.to_numpy()[:n]
+    wx = float(cx) * LCELL
+    wy = float(cy) * LCELL
+    d2 = (x - wx) * (x - wx) + (y - wy) * (y - wy)
+    i = int(np.argmin(d2))
+    return i, float(np.sqrt(d2[i]))
+
+
+def add_anchor_host(cx1, cy1, cx2, cy2, pretension, stiffness, fmax):
+    a, da = _nearest_block(cx1, cy1)
+    b, db = _nearest_block(cx2, cy2)
+    if a < 0 or b < 0 or a == b:
+        return 0
+    if da > 0.75 * LCELL or db > 0.75 * LCELL:
+        return 0
+    if pretension < 0.0 or stiffness <= 0.0 or fmax <= 0.0:
+        return 0
+    if pretension >= fmax:
+        return -2
+    x = bx.to_numpy()
+    y = by.to_numpy()
+    d = float(np.hypot(x[b] - x[a], y[b] - y[a]))
+    l0 = d - float(pretension) / float(stiffness)
+    if l0 < 0.1 * LCELL:
+        return -3
+    nb = int(bondCount[None])
+    if nb > 0:
+        aa = bondA.to_numpy()[:nb]
+        bb = bondB.to_numpy()[:nb]
+        an = bondAnchor.to_numpy()[:nb]
+        it = bondIntact.to_numpy()[:nb]
+        for i in range(nb):
+            if an[i] == 1 and it[i] == BOND_INTACT and ((aa[i] == a and bb[i] == b) or (aa[i] == b and bb[i] == a)):
+                update_anchor_kernel(i, l0 / LCELL, stiffness, fmax)
+                return 2
+    add_anchor_kernel(a, b, l0 / LCELL, stiffness, fmax)
+    return 1
+
+
+def remove_anchor_host(cx, cy, radius_cells):
+    nb = int(bondCount[None])
+    if nb <= 0:
+        return 0
+    a = bondA.to_numpy()[:nb]
+    b = bondB.to_numpy()[:nb]
+    an = bondAnchor.to_numpy()[:nb]
+    it = bondIntact.to_numpy()[:nb]
+    x = bx.to_numpy()
+    y = by.to_numpy()
+    wx = float(cx) * LCELL
+    wy = float(cy) * LCELL
+    best = -1
+    bd = 1e30
+    for i in range(nb):
+        if an[i] != 1 or it[i] != BOND_INTACT:
+            continue
+        mx = 0.5 * (x[a[i]] + x[b[i]])
+        my = 0.5 * (y[a[i]] + y[b[i]])
+        d2 = (mx - wx) ** 2 + (my - wy) ** 2
+        if d2 < bd:
+            bd = d2
+            best = i
+    if best >= 0 and bd <= (float(radius_cells) * LCELL) ** 2:
+        kill_anchor_kernel(best)
+        return 1
+    return 0
+
+
+def add_charge_host(cx, cy, energy, radius, delay):
+    global _blast_active
+    n = int(bcount[None])
+    if n <= 0:
+        return 0
+    x = bx.to_numpy()[:n]
+    y = by.to_numpy()[:n]
+    wx = float(cx) * LCELL
+    wy = float(cy) * LCELL
+    d2 = (x - wx) * (x - wx) + (y - wy) * (y - wy)
+    best = int(np.argmin(d2))
+    if float(np.sqrt(d2[best])) > 0.75 * LCELL:
+        return 0
+    m = int(chgN[None])
+    if m > 0:
+        xs = chgX.to_numpy()[:m]
+        ys = chgY.to_numpy()[:m]
+        for k in range(m):
+            if (xs[k] - x[best]) ** 2 + (ys[k] - y[best]) ** 2 < (0.1 * LCELL) ** 2:
+                chgT[k] = int(delay)
+                chgE[k] = float(energy)
+                chgR[k] = float(radius)
+                _blast_active = True
+                return 1
+    if m >= MAXCHG:
+        return -1
+    chgX[m] = x[best]
+    chgY[m] = y[best]
+    chgT[m] = int(delay)
+    chgE[m] = float(energy)
+    chgR[m] = float(radius)
+    chgN[None] = m + 1
+    _blast_active = True
+    return 1
+
+
+def remove_charge_host(cx, cy, radius_cells):
+    global _blast_active
+    n = int(chgN[None])
+    if n <= 0:
+        _blast_active = False
+        return 0
+    xs = chgX.to_numpy()[:n]
+    ys = chgY.to_numpy()[:n]
+    wx = float(cx) * LCELL
+    wy = float(cy) * LCELL
+    d2 = (xs - wx) * (xs - wx) + (ys - wy) * (ys - wy)
+    k = int(np.argmin(d2))
+    if float(np.sqrt(d2[k])) > float(radius_cells) * LCELL:
+        return 0
+    last = n - 1
+    if k != last:
+        chgX[k] = float(xs[last])
+        chgY[k] = float(ys[last])
+        chgT[k] = int(chgT.to_numpy()[last])
+        chgE[k] = float(chgE.to_numpy()[last])
+        chgR[k] = float(chgR.to_numpy()[last])
+    chgN[None] = last
+    _blast_active = last > 0
+    return 1
+
+
+def blast_load_host(items):
+    global _blast_active
+    n = min(len(items), MAXCHG)
+    for k in range(n):
+        c = items[k]
+        chgX[k] = float(c[0]) * LCELL
+        chgY[k] = float(c[1]) * LCELL
+        chgT[k] = int(c[2])
+        chgE[k] = float(c[3])
+        chgR[k] = float(c[4]) * LCELL
+    chgN[None] = n
+    _blast_active = n > 0
+
+
+def blast_update():
+    global _blast_active
+    n = int(chgN[None])
+    if n <= 0:
+        _blast_active = False
+        return 0
+    blast_countdown()
+    t = chgT.to_numpy()[:n]
+    xs = chgX.to_numpy()[:n]
+    ys = chgY.to_numpy()[:n]
+    es = chgE.to_numpy()[:n]
+    rs = chgR.to_numpy()[:n]
+    exploded = 0
+    for k in range(n):
+        if t[k] > 0:
+            continue
+        cx = float(xs[k])
+        cy = float(ys[k])
+        R = float(rs[k])
+        nb = int(bcount[None])
+        if nb > 0:
+            bxv = bx.to_numpy()[:nb]
+            byv = by.to_numpy()[:nb]
+            dd = (bxv - cx) * (bxv - cx) + (byv - cy) * (byv - cy)
+            rm = int(np.argmin(dd))
+            if float(np.sqrt(dd[rm])) <= 0.75 * LCELL:
+                blast_remove(rm)
+        nb = int(bcount[None])
+        total = 0.0
+        if nb > 0:
+            bxv = bx.to_numpy()[:nb]
+            byv = by.to_numpy()[:nb]
+            mm = bmass.to_numpy()[:nb]
+            ff = bfixed.to_numpy()[:nb]
+            bb = bbedrock.to_numpy()[:nb]
+            for j in range(nb):
+                if ff[j] == 1 or bb[j] != 0:
+                    continue
+                ddx = bxv[j] - cx
+                ddy = byv[j] - cy
+                d2 = ddx * ddx + ddy * ddy
+                if d2 <= R * R:
+                    w = 1.0 - np.sqrt(d2) / (R + 1e-9)
+                    total += float(mm[j]) * max(0.0, w) * max(0.0, w)
+        v0 = 0.0
+        if total > 1e-12:
+            v0 = float(np.sqrt(2.0 * float(es[k]) * float(P[None].blastEff) / total))
+        blast_apply(cx, cy, R, v0)
+        exploded += 1
+    alive = [k for k in range(n) if t[k] > 0]
+    for i, k in enumerate(alive):
+        chgX[i] = float(xs[k])
+        chgY[i] = float(ys[k])
+        chgT[i] = int(t[k])
+        chgE[i] = float(es[k])
+        chgR[i] = float(rs[k])
+    chgN[None] = len(alive)
+    _blast_active = len(alive) > 0
+    return exploded
+
+
 _tickN = 0    # номер тика в процессе (для разреженных задач: cleanup/энергия)
 
 
@@ -972,6 +1255,8 @@ def step_physics(mode, dt=None):
     global _tickN
     _tickN += 1
     simT[None] += TICK
+    if _blast_active:
+        blast_update()
     frameBrk[None] = 0
     vmaxHit[None] = 0
     decay_bond_damage()
@@ -1066,7 +1351,7 @@ def compute_energy():
         m = bmass[i]
         v2 = bvx[i] * bvx[i] + bvy[i] * bvy[i]
         ke = 0.5 * m * v2
-        I = m * bsz[i] * bsz[i] / 6.0
+        I = m * LCELL * LCELL / 6.0
         re = 0.5 * I * bw[i] * bw[i]
         # y направлена ВНИЗ: U = m·g·(H−y), иначе падающий блок «набирает»
         # потенциальную энергию и энергобаланс/HUD показывают обратный знак.
@@ -1144,7 +1429,6 @@ def hud_gather():
     hudF[HUD_RP] = P[None].rp
     hudF[HUD_MU] = P[None].mu
     hudF[HUD_RCFACTOR] = P[None].rcFactor
-    hudF[HUD_MAXSIZE] = P[None].maxSize
     hudF[HUD_E] = P[None].E
     hudF[HUD_RHO] = P[None].rho
     hudF[HUD_PEAKT] = stressPeak[0]

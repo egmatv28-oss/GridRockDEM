@@ -187,7 +187,8 @@ CRACK = ti.Vector([0.72, 0.32, 0.9])   # яркий разрыв: тёмный �
 ORANGE = ti.Vector([0.96, 0.30, 0.14])
 BLUE = ti.Vector([0.22, 0.62, 0.96])
 PURPLE = ti.Vector([0.72, 0.32, 0.9])
-JOINT = ti.Vector([0.34, 0.41, 0.48])  # ослабленный шов (не разрыв) — приглушённый
+JOINT = ti.Vector([0.34, 0.41, 0.48])
+ANCHOR = ti.Vector([0.30, 1.0, 0.45])  # ослабленный шов (не разрыв) — приглушённый
 WHITE = ti.Vector([1.0, 1.0, 1.0])
 
 # --- палитра шкал напряжений: по 10 ступеней на шкалу ---------------------
@@ -436,8 +437,8 @@ def render_blocks(show: ti.i32):
     ox = CAMX[None]
     oy = CAMY[None]
     for i in range(bcount[None]):
-        ri = bsz[i] * PX * z * 0.5
-        px = int(bsz[i] * PX * z)
+        ri = LCELL * PX * z * 0.5
+        px = int(LCELL * PX * z)
         X = int(bx[i] * PX * z + ox - ri)
         Y = H - 1 - int(by[i] * PX * z + oy + ri)
         if bbedrock[i] != 0 or bfixed[i] == 1:
@@ -536,6 +537,12 @@ def draw_num(x: ti.i32, y: ti.i32, val: ti.f32, s: ti.i32, col: ti.template(), d
     num = int(v * float(scale) + 0.5)   # значение в долях 1/scale
     whole = num // scale
     frac = num - whole * scale
+    if whole >= 10000:
+        draw_digit(x0, y, (whole // 10000) % 10, s, col)
+        x0 += 4 * s
+    if whole >= 1000:
+        draw_digit(x0, y, (whole // 1000) % 10, s, col)
+        x0 += 4 * s
     if whole >= 100:
         draw_digit(x0, y, (whole // 100) % 10, s, col)
         x0 += 4 * s
@@ -609,6 +616,35 @@ def render_stress_legend(rp: ti.f32, rc: ti.f32):
         draw_num(xb + sw_w + 6, y_base - 17, 0.0, s, wcol, 0)
 
 
+@ti.func
+def bond_is_diag(a: ti.i32, b: ti.i32) -> ti.i32:
+    dx = bx[b] - bx[a]
+    dy = by[b] - by[a]
+    c = ti.cos(brot[a])
+    s = ti.sin(brot[a])
+    lx = c * dx + s * dy
+    ly = -s * dx + c * dy
+    L = ti.sqrt(lx * lx + ly * ly)
+    res = 0
+    if L > 1e-9 and ti.min(ti.abs(lx), ti.abs(ly)) > 0.12 * L:
+        res = 1
+    return res
+
+
+@ti.func
+def ray_square_exit(dx: ti.f32, dy: ti.f32, ang: ti.f32, half: ti.f32) -> ti.f32:
+    c = ti.cos(ang)
+    s = ti.sin(ang)
+    lx = c * dx + s * dy
+    ly = -s * dx + c * dy
+    t = 1e9
+    if ti.abs(lx) > 1e-9:
+        t = ti.min(t, half / ti.abs(lx))
+    if ti.abs(ly) > 1e-9:
+        t = ti.min(t, half / ti.abs(ly))
+    return t
+
+
 @ti.kernel
 def render_bonds(show: ti.i32, scale: ti.i32):
     """Линии напряжений по связям: растяжение — красная шкала, сжатие — синяя.
@@ -625,6 +661,8 @@ def render_bonds(show: ti.i32, scale: ti.i32):
             # раньше условие "!= BOND_DEAD" рисовало её линией напряжения,
             # и у обрушенных блоков связь выглядела целой.
             if bondIntact[bd] == BOND_INTACT:
+                if bondAnchor[bd] == 1:
+                    continue
                 a = bondA[bd]
                 b = bondB[bd]
                 if bbedrock[a] != 0 or bbedrock[b] != 0 or bfixed[a] == 1 or bfixed[b] == 1:
@@ -645,8 +683,146 @@ def render_bonds(show: ti.i32, scale: ti.i32):
                     # На мелком масштабе (128) 2-пиксельные линии забивают
                     # картинку: связи рисуем тоньше, швы остаются читаемыми.
                     bw = 2.0 if z > 0.6 else 1.0
-                    draw_line(bx[a] * PX * z + ox, H - 1 - (by[a] * PX * z + oy),
-                              bx[b] * PX * z + ox, H - 1 - (by[b] * PX * z + oy), col, bw)
+                    sx0 = bx[a] * PX * z + ox
+                    sy0 = H - 1 - (by[a] * PX * z + oy)
+                    sx1 = bx[b] * PX * z + ox
+                    sy1 = H - 1 - (by[b] * PX * z + oy)
+                    dot = 0
+                    if bond_is_diag(a, b) == 1:
+                        dxw = bx[b] - bx[a]
+                        dyw = by[b] - by[a]
+                        ta = ray_square_exit(dxw, dyw, brot[a], 0.5 * LCELL)
+                        tb = ray_square_exit(-dxw, -dyw, brot[b], 0.5 * LCELL)
+                        t0 = ta
+                        t1 = 1.0 - tb
+                        if t0 < 0.0:
+                            t0 = 0.0
+                        if t0 > 1.0:
+                            t0 = 1.0
+                        if t1 < 0.0:
+                            t1 = 0.0
+                        if t1 > 1.0:
+                            t1 = 1.0
+                        if t1 > t0 + 1e-4:
+                            sx0 = (bx[a] + dxw * t0) * PX * z + ox
+                            sy0 = H - 1 - ((by[a] + dyw * t0) * PX * z + oy)
+                            sx1 = (bx[a] + dxw * t1) * PX * z + ox
+                            sy1 = H - 1 - ((by[a] + dyw * t1) * PX * z + oy)
+                        else:
+                            tm = 0.5 * (t0 + t1)
+                            sx0 = (bx[a] + dxw * tm) * PX * z + ox
+                            sy0 = H - 1 - ((by[a] + dyw * tm) * PX * z + oy)
+                            sx1 = sx0
+                            sy1 = sy0
+                            dot = 1
+                    if dot == 1:
+                        px = int(sx0)
+                        py = int(sy0)
+                        fill_rect(px - 1, py - 1, px + 1, py + 1, col)
+                    else:
+                        draw_line(sx0, sy0, sx1, sy1, col, bw)
+
+
+@ti.kernel
+def anchor_peaks():
+    anchorPeak[None] = 0.0
+    for bd in range(bondCount[None]):
+        if bondIntact[bd] == BOND_INTACT and bondAnchor[bd] == 1:
+            ti.atomic_max(anchorPeak[None], bondR[bd] * bondFmax[bd])
+
+
+@ti.kernel
+def render_anchors(legend: ti.i32):
+    z = CAMZ[None]
+    ox = CAMX[None]
+    oy = CAMY[None]
+    pk = anchorPeak[None]
+    if pk < 1e-9:
+        pk = 1.0
+    for bd in range(bondCount[None]):
+        if bondIntact[bd] != BOND_INTACT or bondAnchor[bd] != 1:
+            continue
+        a = bondA[bd]
+        b = bondB[bd]
+        bw = 2.0 if z > 0.6 else 1.0
+        col = ANCHOR
+        if legend == 1:
+            r = bondR[bd] * bondFmax[bd] / pk
+            if r < 0.0:
+                r = 0.0
+            if r > 1.0:
+                r = 1.0
+            col = ti.Vector([0.18 + 0.72 * r, 0.72 + 0.28 * r, 0.24 + 0.16 * r])
+        xa = bx[a] * PX * z + ox
+        ya = H - 1 - (by[a] * PX * z + oy)
+        xb = bx[b] * PX * z + ox
+        yb = H - 1 - (by[b] * PX * z + oy)
+        draw_line(xa, ya, xb, yb, col, bw)
+        fill_diamond(xa, ya, 1.5 * z, col)
+        fill_diamond(xb, yb, 1.5 * z, col)
+        if legend == 1:
+            val = bondR[bd] * bondFmax[bd] * 0.001
+            dec = 0
+            if val < 10.0:
+                dec = 1
+            draw_num(int(0.5 * (xa + xb)) + 4, int(0.5 * (ya + yb)) + 4,
+                     val, 2, WHITE, dec)
+
+
+@ti.kernel
+def render_anchor_legend():
+    s = 3
+    n = 10
+    sw_w = 18
+    sw_h = 20
+    stack_h = n * sw_h
+    x_t = 26
+    y_base = H - 280
+    fill_rect(x_t - 10, y_base - 24, x_t + 112, y_base + stack_h + 30,
+              ti.Vector([0.05, 0.06, 0.08]))
+    vmax = anchorPeak[None] * 0.001
+    if vmax < 1e-9:
+        vmax = 0.0
+    for k in range(n):
+        r = float(k + 1) / float(n)
+        col = ti.Vector([0.18 + 0.72 * r, 0.72 + 0.28 * r, 0.24 + 0.16 * r])
+        y0 = y_base + k * sw_h
+        fill_rect(x_t, y0, x_t + sw_w - 1, y0 + sw_h - 2, col)
+        val = vmax * r
+        dec = 2
+        if val >= 10.0:
+            dec = 1
+        if val >= 100.0:
+            dec = 0
+        draw_num(x_t + sw_w + 6, y0 + (sw_h - 5 * s) // 2, val, s, WHITE, dec)
+    draw_num(x_t + sw_w + 6, y_base - 17, 0.0, s, WHITE, 0)
+
+
+@ti.kernel
+def render_anchor_rubber(x0: ti.f32, y0: ti.f32, x1: ti.f32, y1: ti.f32):
+    z = CAMZ[None]
+    X0 = x0 * CELL * z + CAMX[None]
+    Y0 = H - 1 - (y0 * CELL * z + CAMY[None])
+    X1 = x1 * CELL * z + CAMX[None]
+    Y1 = H - 1 - (y1 * CELL * z + CAMY[None])
+    draw_line(X0, Y0, X1, Y1, ANCHOR, 1.0)
+    draw_circle_outline(X0, Y0, 3.0 * z, ANCHOR, 1.0)
+
+
+@ti.kernel
+def render_blast():
+    z = CAMZ[None]
+    ox = CAMX[None]
+    oy = CAMY[None]
+    for k in range(chgN[None]):
+        sx = chgX[k] * PX * z + ox
+        sy = H - 1 - (chgY[k] * PX * z + oy)
+        col = AMBER
+        if chgT[k] <= 3:
+            col = ORANGE
+        fill_diamond(sx, sy, 2.0 * z, BG)
+        draw_circle_outline(sx, sy, 4.0 * z, col, 1.0)
+        draw_num(int(sx) + 6, int(sy) + 10, float(chgT[k]), 2, col, 0)
 
 
 @ti.kernel
@@ -658,6 +834,8 @@ def render_joints():
     for bd in range(bondCount[None]):
         if bondIntact[bd] != BOND_INTACT:
             continue
+        if bondAnchor[bd] == 1:
+            continue
         a = bondA[bd]
         b = bondB[bd]
         mx = (bx[a] + bx[b]) * 0.5
@@ -667,9 +845,11 @@ def render_joints():
         d = ti.sqrt(dx * dx + dy * dy)
         if d < 1e-6:
             continue
+        if bond_is_diag(a, b) == 1:
+            continue
         ux = dx / d
         uy = dy / d
-        w = ti.min(bsz[a], bsz[b]) * 0.5
+        w = 0.5 * LCELL
         # нормаль связи В БУФЕРЕ (мир y вниз, буфер Y = H-1-y вверх):
         # связь в буфере (ux, -uy), её перпендикуляр (uy, ux). Раньше перпендикуляр
         # брался в мировых осях (-uy, ux) и рисовался без переворота Y — засечка
@@ -709,7 +889,7 @@ def render_cracks():
         mx = (bx[a] + bx[b]) * 0.5 * PX * z + ox
         my = H - 1 - ((by[a] + by[b]) * 0.5 * PX * z + oy)
         j = bondJ[bd] * PX * z
-        half = ti.min(bsz[a], bsz[b]) * PX * z * 0.5
+        half = 0.5 * LCELL * PX * z
         # оси буфера (мир y вниз -> Y вверх): вдоль связи (ux, -uy), поперёк (uy, ux).
         ux = dx / d
         uy = dy / d

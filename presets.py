@@ -1,6 +1,6 @@
 """ГЕОМАССИВ/2D · DEM — пресеты сцен и схемы (presets)
 
-Генераторы готовых сцен (выработка, склон, мозаика, наклонные слои, образцы
+Генераторы готовых сцен (выработка, склон, наклонные слои, образцы
 UCS и бразильского теста), а также сохранение/загрузка модели в JSON (./scenes).
 Модель передаётся в решатель через add_block_func/add_bond_func или build_model.
 """
@@ -9,7 +9,6 @@ import io
 import json
 import math
 import os
-import random
 
 import numpy as np
 import taichi as ti
@@ -137,7 +136,7 @@ def gen_tunnel(weak: ti.i32):
                     x += 1
                     continue
                 fixed = 1 if y >= ROWS - P[None].fixedRows else 0
-            i = add_block_func(x + 0.5, y + 0.5, 1.0, fixed)
+            i = add_block_func(x + 0.5, y + 0.5, fixed)
             if i >= 0:
                 r_filled[cell] = 1
                 r_block[cell] = i
@@ -211,7 +210,7 @@ def gen_proto_arch(A=10, H=10, notch=4):
                 continue
             fixed = 1 if j >= ROWS - P[None].fixedRows else 0
             idx[(i, j)] = len(blocks)
-            blocks.append((x, y, 1.0, fixed))
+            blocks.append((x, y, fixed))
     bonds = []
     for (i, j), a in idx.items():
         if (i + 1, j) in idx:
@@ -269,7 +268,7 @@ def gen_standard(weak: ti.i32):
                     x += 1
                     continue
                 fixed = 1 if y >= ROWS - P[None].fixedRows else 0
-            i = add_block_func(x + 0.5, y + 0.5, 1.0, fixed)
+            i = add_block_func(x + 0.5, y + 0.5, fixed)
             if i >= 0:
                 r_filled[cell] = 1
                 r_block[cell] = i
@@ -323,7 +322,7 @@ def gen_slope(weak: ti.i32):
                     x += 1
                     continue
                 fixed = 1 if y >= ROWS - P[None].fixedRows else 0
-            i = add_block_func(x + 0.5, y + 0.5, 1.0, fixed)
+            i = add_block_func(x + 0.5, y + 0.5, fixed)
             if i >= 0:
                 r_filled[cell] = 1
                 r_block[cell] = i
@@ -378,7 +377,7 @@ def gen_solid():
     c = 0
     while c < N:
         fixed = 1 if c // COLS >= ROWS - P[None].fixedRows else 0
-        i = add_block_func((c % COLS) + 0.5, (c // COLS) + 0.5, 1.0, fixed)
+        i = add_block_func((c % COLS) + 0.5, (c // COLS) + 0.5, fixed)
         if i >= 0:
             r_filled[c] = 1
             r_block[c] = i
@@ -440,7 +439,7 @@ def gen_tilted(weak: ti.i32, ct: ti.f32, st: ti.f32, cav: ti.i32):
                     ok = 0
             if ok == 1:
                 fixed = 1 if (y >= ROWS - 2.0 or y >= ROWS - P[None].fixedRows) else 0
-                i = add_block_func(x, y, 1.0, fixed)
+                i = add_block_func(x, y, fixed)
                 if i >= 0:
                     brot[i] = tilt      # блок повёрнут вдоль слоя
                     latB[(u + LATH) * LATN + (v + LATH)] = i
@@ -471,86 +470,6 @@ def gen_tilted(weak: ti.i32, ct: ti.f32, st: ti.f32, cav: ti.i32):
                     add_bond_func(a, b, 1.0, intact)
 
 
-def build_bigblocks():
-    """Сцена с блоками ПРОИЗВОЛЬНОГО размера (мозаика 1..3 клетки).
-
-    Модель строится на CPU (списки) и передаётся в решатель через build_model —
-    демонстрация, что решатель не привязан ни к сетке, ни к размеру блока.
-    """
-    cx = COLS * 0.5
-    cy = ROWS * 0.6
-    rx = 7.0
-    ry = 5.0
-    occ = [[0] * COLS for _ in range(ROWS)]
-    for y in range(ROWS):
-        for x in range(COLS):
-            dx = (x + 0.5 - cx) / rx
-            dy = (y + 0.5 - cy) / ry
-            if dx * dx + dy * dy < 1.0:
-                occ[y][x] = -1   # полость выработки
-    blocks = []
-    for y in range(ROWS):
-        for x in range(COLS):
-            if occ[y][x] != 0:
-                continue
-            maxs = min(3, COLS - x, ROWS - y)
-            r = random.random()
-            s = 3 if r < 0.2 else (2 if r < 0.55 else 1)
-            if s > maxs:
-                s = maxs
-            fits = True
-            for yy in range(y, y + s):
-                for xx in range(x, x + s):
-                    if occ[yy][xx] != 0:
-                        fits = False
-                        break
-                if not fits:
-                    break
-            if not fits:
-                occ[y][x] = 1
-                continue
-            fixed = 1 if y >= ROWS - P[None].fixedRows else 0
-            idx = len(blocks)
-            blocks.append((x + s / 2.0, y + s / 2.0, float(s), fixed))
-            for yy in range(y, y + s):
-                for xx in range(x, x + s):
-                    occ[yy][xx] = idx + 1
-    bonds = []
-    seen = set()
-    for y in range(ROWS):
-        for x in range(COLS):
-            b = occ[y][x]
-            if b <= 0:
-                continue
-            a0 = b - 1
-            for (xx, yy) in ((x + 1, y), (x, y + 1)):
-                if xx >= COLS or yy >= ROWS:
-                    continue
-                c = occ[yy][xx]
-                if c <= 0 or c == b:
-                    continue
-                a1 = c - 1
-                if (a0, a1) in seen or (a1, a0) in seen:
-                    continue
-                dx = blocks[a1][0] - blocks[a0][0]
-                dy = blocks[a1][1] - blocks[a0][1]
-                # длина покоя — ИСТИННОЕ расстояние между центрами (в клетках,
-                # add_bond_func переведёт в метры): max-ось занижала его у пар
-                # «большой+малый» блок (смещение центров диагональное), связь
-                # создавалась НАТЯНУТОЙ и рвалась лишний раз.
-                rest = math.sqrt(dx * dx + dy * dy)
-                bonds.append((a0, a1, rest, 1))
-                seen.add((a0, a1))
-    water = []
-    for _ in range(200):
-        a = random.uniform(0.0, 2.0 * math.pi)
-        rr = math.sqrt(random.random())
-        water.append((cx + math.cos(a) * rr * rx * 0.85,
-                      cy + math.sin(a) * rr * ry * 0.6 + ry * 0.25,
-                      0.02, math.pi * 0.5))
-    build_model(blocks, bonds, water, (cx, cy, rx, ry))
-
-
 def gen_ucs(w=10, h=20, fixed_rows=1):
     """Пресет ОДНООСНОГО СЖАТИЯ (UCS): монолитный образец w×h блоков, нижний
     ряд закреплён (плита пресса). Нагрузка подаётся сверху слайдером «порода над
@@ -564,7 +483,7 @@ def gen_ucs(w=10, h=20, fixed_rows=1):
         for i in range(w):
             fixed = 1 if j >= h - fixed_rows else 0
             idx[(i, j)] = len(blocks)
-            blocks.append((x0 + i + 0.5, y0 + j + 0.5, 1.0, fixed))
+            blocks.append((x0 + i + 0.5, y0 + j + 0.5, fixed))
     bonds = []
     for j in range(h):
         for i in range(w):
@@ -591,12 +510,12 @@ def gen_brazil(R=12, cap=2):
         for i in range(-R, R + 1):
             if i * i + j * j <= R * R:
                 idx[(i, j)] = len(blocks)
-                blocks.append((cx + i + 0.5, cy + j + 0.5, 1.0, 0))
+                blocks.append((cx + i + 0.5, cy + j + 0.5, 0))
     top_cap = sorted(idx[(i, j)] for (i, j) in idx if j >= R - 2 and abs(i) <= cap)
     bot_cap = sorted(idx[(i, j)] for (i, j) in idx if j <= -R + 2 and abs(i) <= cap)
     for a in bot_cap:
-        x_, y_, s_, _ = blocks[a]
-        blocks[a] = (x_, y_, s_, 1)
+        x_, y_, _ = blocks[a]
+        blocks[a] = (x_, y_, 1)
     bonds = []
     for (i, j), a in idx.items():
         if (i + 1, j) in idx:
@@ -627,7 +546,7 @@ def gen_beam(w=48, h=4, sup=2):
             # опоры — нижний ряд у левого и правого торца балки
             fixed = 1 if (j == h - 1 and (i < sup or i >= w - sup)) else 0
             idx[(i, j)] = len(blocks)
-            blocks.append((x0 + i + 0.5, y0 + j + 0.5, 1.0, fixed))
+            blocks.append((x0 + i + 0.5, y0 + j + 0.5, fixed))
     bonds = []
     for j in range(h):
         for i in range(w):
@@ -663,7 +582,7 @@ def gen_buckling(w=2, h=50, fixed_rows=1):
         for i in range(w):
             fixed = 1 if j >= h - fixed_rows else 0
             idx[(i, j)] = len(blocks)
-            blocks.append((x0 + i + 0.5, y0 + j + 0.5, 1.0, fixed))
+            blocks.append((x0 + i + 0.5, y0 + j + 0.5, fixed))
     bonds = []
     for j in range(h):
         for i in range(w):
@@ -682,8 +601,8 @@ def gen_buckling(w=2, h=50, fixed_rows=1):
 def generate(mode, weak, tilt_deg=0.0):
     """Построить модель сцены и передать её в решатель.
 
-    mode 0 — выработка-круг (единичные блоки), mode 1 — склон,
-    mode 2 — мозаика произвольных размеров (build_model),
+    mode 0 — выработка-круг, mode 1 — склон,
+    mode 2 — устаревший режим (сводится к mode 0),
     mode 3 — выработка-стандарт (арка + прямые стены и пол).
     weak — ослабленные плоскости.
     tilt_deg — НАКЛОН СЛОЁВ к горизонтали (градусы, + = падение вправо):
@@ -694,22 +613,21 @@ def generate(mode, weak, tilt_deg=0.0):
     P[None].tiltC = 1.0    # сброс наклона модели (локальные оси = мировые)
     P[None].tiltS = 0.0
     if mode == 2:
-        build_bigblocks()
-    else:
-        reset_all()
-        refillOff[None] = 1   # новая сцена — досыпка сверху ОТКЛЮЧЕНА (по умолчанию;
-                              # включается кнопкой "Dosypka" в GUI). Спавн шёл в
-                              # занятые клетки без проверки -> "толчки" и трещины.
-        if mode == 0:
-            if abs(tilt_deg) > 0.5:
-                t = math.radians(tilt_deg)
-                gen_tilted(weak, math.cos(t), math.sin(t), 1)
-            else:
-                gen_tunnel(weak)
-        elif mode == 3:
-            gen_standard(weak)
+        mode = 0
+    reset_all()
+    refillOff[None] = 1   # новая сцена — досыпка сверху ОТКЛЮЧЕНА (по умолчанию;
+                          # включается кнопкой "Dosypka" в GUI). Спавн шёл в
+                          # занятые клетки без проверки -> "толчки" и трещины.
+    if mode == 0:
+        if abs(tilt_deg) > 0.5:
+            t = math.radians(tilt_deg)
+            gen_tilted(weak, math.cos(t), math.sin(t), 1)
         else:
-            gen_slope(weak)
+            gen_tunnel(weak)
+    elif mode == 3:
+        gen_standard(weak)
+    else:
+        gen_slope(weak)
     # Боковое давление задаётся прямой силой sideF (compute_side_load в solver),
     # престресса в модели нет. Перегруз loadCur набирается ПЛАВНО в compute_top_load_fused
     # (LOAD_TIME: линейно 0 -> ровно 100% за LOAD_TIME с внутреннего времени).
@@ -775,6 +693,7 @@ def _scene_params():
         "soften": int(P[None].soften), "softResidual": float(P[None].softResidual),
         "absorb": int(P[None].absorb), "absorbWidth": float(P[None].absorbWidth),
         "absorbCoef": float(P[None].absorbCoef), "absorbTop": int(P[None].absorbTop),
+        "blastEff": float(P[None].blastEff),
     }
 
 
@@ -794,27 +713,32 @@ def save_scene(path, mode=0, weak=0, tilt_deg=0.0, camera=None, test=None):
     """Сохранить текущую модель в JSON: блоки, связи, вода, параметры, камера."""
     nb = int(bcount[None])
     nbd = int(bondCount[None])
-    xb = bx.to_numpy(); yb = by.to_numpy(); s = bsz.to_numpy(); fx = bfixed.to_numpy()
+    xb = bx.to_numpy(); yb = by.to_numpy(); fx = bfixed.to_numpy()
     bb = bbedrock.to_numpy()
     br = brot.to_numpy()
     A = bondA.to_numpy(); B = bondB.to_numpy(); R = brest.to_numpy(); I = bondIntact.to_numpy()
-    blocks = [[float(xb[i] / LCELL), float(yb[i] / LCELL), float(s[i] / LCELL),
+    blocks = [[float(xb[i] / LCELL), float(yb[i] / LCELL),
                int(fx[i]), float(br[i]), int(bb[i])] for i in range(nb)]
     bonds = []
     for bd in range(nbd):
         if int(I[bd]) == BOND_DEAD:
             continue
         bonds.append([int(A[bd]), int(B[bd]), float(R[bd] / LCELL),
-                      1 if int(I[bd]) == BOND_INTACT else 0])
+                      1 if int(I[bd]) == BOND_INTACT else 0,
+                      int(bondAnchor[bd]), float(bondK[bd]), float(bondFmax[bd])])
     water = []
     cav = None
     if cavRX[None] > 0.0:
         cav = [float(cavX[None]), float(cavY[None]), float(cavRX[None]), float(cavRY[None])]
+    charges = []
+    for k in range(int(chgN[None])):
+        charges.append([float(chgX[k] / LCELL), float(chgY[k] / LCELL),
+                        int(chgT[k]), float(chgE[k]), float(chgR[k] / LCELL)])
     data = {
-        "version": 1, "mode": int(mode), "weak": int(weak), "tilt_deg": float(tilt_deg),
+        "version": 3, "mode": int(mode), "weak": int(weak), "tilt_deg": float(tilt_deg),
         "camera": list(camera) if camera else None, "test": test,
         "params": _scene_params(), "cavity": cav,
-        "blocks": blocks, "bonds": bonds, "water": water,
+        "blocks": blocks, "bonds": bonds, "water": water, "charges": charges,
     }
     os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
     with io.open(path, "w", encoding="utf-8") as f:
@@ -827,6 +751,7 @@ def load_scene(path):
     with io.open(path, encoding="utf-8") as f:
         data = json.load(f)
     p = data.get("params", {})
+    version = int(data.get("version", 1))
     if p:
         P[None].rho = float(p.get("rho", RHO_R))
         P[None].E = float(p.get("E", 1e10))
@@ -844,12 +769,14 @@ def load_scene(path):
         P[None].tensConf = float(p.get("tensConf", 0.0))
         P[None].Gf = float(p.get("Gf", 100.0))
         P[None].k0 = float(p.get("k0", K0_LATERAL))
+        P[None].g = float(p.get("g", G_PHYS))
+        P[None].ftScale = FT_SIGMA
         P[None].depth = float(p.get("depth", 0.0))
         P[None].loadX = float(p.get("loadX", 0.0))
         P[None].head = float(p.get("head", 0.0))
         P[None].fixedRows = int(p.get("fixedRows", 2))
         P[None].walls = int(p.get("walls", 1))
-        P[None].substeps = int(p.get("substeps", 384))
+        P[None].substeps = int(p.get("substeps", SUBSTEPS))
         P[None].kick = float(p.get("kick", 0.14))
         P[None].splitN = float(p.get("splitN", 0.7))
         P[None].stabC = float(p.get("stabC", STAB_C))
@@ -876,15 +803,30 @@ def load_scene(path):
         P[None].absorbWidth = float(p.get("absorbWidth", 8.0))
         P[None].absorbCoef = float(p.get("absorbCoef", 500.0))
         P[None].absorbTop = int(p.get("absorbTop", 0))
+        P[None].blastEff = float(p.get("blastEff", 0.25))
+        if version < 3:
+            P[None].substeps = max(P[None].substeps, SUBSTEPS)
+            P[None].vmax = max(P[None].vmax, VMAX)
     raw = data.get("blocks", [])
-    blocks = [(float(b[0]), float(b[1]), float(b[2]), int(b[3])) for b in raw]
-    brots = [float(b[4]) if len(b) > 4 else 0.0 for b in raw]
-    bedrock = [int(b[5]) if len(b) > 5 else 0 for b in raw]
+    if version >= 2:
+        blocks = [(float(b[0]), float(b[1]), int(b[2])) for b in raw]
+        brots = [float(b[3]) if len(b) > 3 else 0.0 for b in raw]
+        bedrock = [int(b[4]) if len(b) > 4 else 0 for b in raw]
+    else:
+        blocks = [(float(b[0]), float(b[1]), int(b[3])) for b in raw]
+        brots = [float(b[4]) if len(b) > 4 else 0.0 for b in raw]
+        bedrock = [int(b[5]) if len(b) > 5 else 0 for b in raw]
     bonds = [(int(b[0]), int(b[1]), float(b[2]), int(b[3])) for b in data.get("bonds", [])]
     water = [(float(w[0]), float(w[1]), float(w[2]), float(w[3])) for w in data.get("water", [])]
     cav = data.get("cavity")
     cavity = (cav[0], cav[1], cav[2], cav[3]) if cav else None
     build_model(blocks, bonds, water, cavity)
+    for bd, raw_b in enumerate(data.get("bonds", [])):
+        if len(raw_b) > 6 and bd < int(bondCount[None]) and int(raw_b[4]) == 1:
+            bondAnchor[bd] = 1
+            bondK[bd] = float(raw_b[5])
+            bondFmax[bd] = float(raw_b[6])
+    blast_load_host(data.get("charges", []))
     if bedrock:
         _load_bedrock(np.asarray(bedrock, dtype=np.int32))
     update_mass_rho()
